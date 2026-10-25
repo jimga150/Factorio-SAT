@@ -13,7 +13,7 @@ from .network import deduplicate_network, get_input_output_colours, open_network
 from .solver import Grid, TileTemplate
 from .template import OneHotTemplate
 from .tile import EmptyTile, Belt
-from .util import implies, invert_components, literals_different, set_all_false, set_number, set_numbers
+from .util import *
 
 
 def setup_balancer_ends_with_offsets(grid, network, start_offset: int, end_offset: int):
@@ -42,7 +42,7 @@ def setup_balancer_ends_with_offsets(grid, network, start_offset: int, end_offse
         grid.set_tile(grid.width - 1, y, EmptyTile())
 
 
-def setup_balancer_input(grid: Grid, tiles: Sequence[TileTemplate], direction: int, count: int, rest_empty: bool = True):
+def setup_balancer_input(grid: Grid, tiles: Sequence[TileTemplate], direction: int, count: int, group: bool = True, rest_empty: bool = True):
     assert count <= len(tiles)
     offsets = [grid.allocate_variable() for _ in range(len(tiles) - count)]
 
@@ -53,18 +53,34 @@ def setup_balancer_input(grid: Grid, tiles: Sequence[TileTemplate], direction: i
         grid.clauses += quadratic_one(offsets)
         for di, literal in enumerate(offsets):
             consequences = []
-            for i, tile in enumerate(tiles):
-                if i in range(di, di + count):
-                    consequences += [[tile.input_direction[direction]], [tile.is_belt]]
-                elif rest_empty:
-                    consequences += set_all_false(tile.all_direction)
-                else:
-                    consequences += [[-tile.input_direction[direction]], [tile.is_belt]]
+
+            if group:
+                # group all inputs to the top <count> tiles
+                for i, tile in enumerate(tiles):
+                    if i in range(di, di + count):
+                        consequences += [[tile.input_direction[direction]], [tile.is_belt]]
+                    elif rest_empty:
+                        consequences += set_all_false(tile.all_direction)
+                    else:
+                        consequences += [[-tile.input_direction[direction]], [tile.is_belt]]
+            else:
+                # inputs can be anywhere as long as there are <count> of them
+
+                # get count of inputs
+                is_inputs = [tile.input_direction[direction] for tile in tiles]
+                act_input_count = [grid.pool._next() for _ in range(bin_length(len(is_inputs)+1))]
+                consequences += get_popcount(is_inputs, act_input_count, grid.pool._next)
+
+                # set count equal to "count" as binary
+                des_input_count = [grid.pool._next() for _ in range(bin_length(len(is_inputs) + 1))]
+                consequences += set_number(count, des_input_count)
+                consequences += set_numbers_equal(des_input_count, act_input_count)
+
             grid.clauses += implies([literal], consequences)
     return offsets
 
 
-def setup_balancer_output(grid: Grid, tiles: Sequence[TileTemplate], direction: int, count: int, rest_empty: bool = True):
+def setup_balancer_output(grid: Grid, tiles: Sequence[TileTemplate], direction: int, count: int, group: bool = True, rest_empty: bool = True):
     assert count <= len(tiles)
     offsets = [grid.allocate_variable() for _ in range(len(tiles) - count)]
 
@@ -75,25 +91,41 @@ def setup_balancer_output(grid: Grid, tiles: Sequence[TileTemplate], direction: 
         grid.clauses += quadratic_one(offsets)
         for di, literal in enumerate(offsets):
             consequences = []
-            for i, tile in enumerate(tiles):
-                if i in range(di, di + count):
-                    consequences += [[tile.output_direction[direction]], [tile.is_belt]]
-                elif rest_empty:
-                    consequences += set_all_false(tile.all_direction)
-                else:
-                    consequences += [[-tile.output_direction[direction]]]
+
+            if group:
+                # group all outputs to the top <count> tiles
+                for i, tile in enumerate(tiles):
+                    if i in range(di, di + count):
+                        consequences += [[tile.output_direction[direction]], [tile.is_belt]]
+                    elif rest_empty:
+                        consequences += set_all_false(tile.all_direction)
+                    else:
+                        consequences += [[-tile.output_direction[direction]]]
+            else:
+                # outputs can be anywhere as long as there are <count> of them
+
+                # get count of outputs
+                is_outputs = [tile.output_direction[direction] for tile in tiles]
+                act_output_count = [grid.pool._next() for _ in range(bin_length(len(is_outputs) + 1))]
+                consequences += get_popcount(is_outputs, act_output_count, grid.pool._next)
+
+                # set count equal to "count" as binary
+                des_output_count = [grid.pool._next() for _ in range(bin_length(len(is_outputs) + 1))]
+                consequences += set_number(count, des_output_count)
+                consequences += set_numbers_equal(des_output_count, act_output_count)
+
             grid.clauses += implies([literal], consequences)
     return offsets
 
 
-def setup_balancer_ends(grid: Grid, network, aligned: bool, use_ends: bool):
+def setup_balancer_ends(grid: Grid, network, aligned: bool, group: bool, use_ends: bool):
     (_, input_count), (_, output_count) = get_input_output_colours(network.elements())
 
     start_tiles = [grid.get_tile_instance(0, y) for y in range(grid.height)]
     end_tiles = [grid.get_tile_instance(grid.width - 1, y) for y in range(grid.height)]
 
-    start_offsets = setup_balancer_input(grid, start_tiles, 0, input_count, not use_ends)
-    end_offsets = setup_balancer_output(grid, end_tiles, 0, output_count, not use_ends)
+    start_offsets = setup_balancer_input(grid, start_tiles, 0, input_count, group, not use_ends)
+    end_offsets = setup_balancer_output(grid, end_tiles, 0, output_count, group, not use_ends)
 
     if aligned:
         if input_count >= output_count:
@@ -104,21 +136,21 @@ def setup_balancer_ends(grid: Grid, network, aligned: bool, use_ends: bool):
                 grid.clauses += implies([end_offset], [start_offsets[i:(i + 1 + output_count - input_count)]])
 
 
-def setup_balancer_ends_90(grid: Grid, network, use_ends: bool):
+def setup_balancer_ends_90(grid: Grid, network, group: bool, use_ends: bool):
     (_, input_count), (_, output_count) = get_input_output_colours(network.elements())
 
     start_tiles = [grid.get_tile_instance(0, y) for y in range(grid.height)]
     end_tiles = [grid.get_tile_instance(x, grid.height - 1) for x in range(grid.width)]
-    setup_balancer_input(grid, start_tiles, 0, input_count, not use_ends)
-    setup_balancer_output(grid, end_tiles, 3, output_count, not use_ends)
+    setup_balancer_input(grid, start_tiles, 0, input_count, group, not use_ends)
+    setup_balancer_output(grid, end_tiles, 3, output_count, group, not use_ends)
 
 
 def setup_balancer_ends_180(grid: Grid, network):
     (_, input_count), (_, output_count) = get_input_output_colours(network.elements())
 
     tiles = [grid.get_tile_instance(0, y) for y in range(grid.height)]
-    setup_balancer_input(grid, tiles, 0, input_count, rest_empty=False)
-    setup_balancer_output(grid, tiles, 2, output_count, rest_empty=False)
+    setup_balancer_input(grid, tiles, 0, input_count, group=True, rest_empty=False)
+    setup_balancer_output(grid, tiles, 2, output_count, group=True, rest_empty=False)
 
 
 def create_balancer(network, width: int, height: int, underground_length: int) -> Grid:
@@ -371,13 +403,13 @@ def main():
             set_nonempty_tiles(grid, args.partial.read())
 
     if args.turn_90:
-        setup_balancer_ends_90(grid, network, args.use_ends)
+        setup_balancer_ends_90(grid, network, True, args.use_ends)
     elif args.turn_180:
         setup_balancer_ends_180(grid, network)
     elif args.custom:
         pass
     else:
-        setup_balancer_ends(grid, network, args.aligned, args.use_ends)
+        setup_balancer_ends(grid, network, args.aligned, True, args.use_ends)
 
     for solution in grid.itersolve(solver=args.solver, ignore_colour=True):
         print(json.dumps(solution.tolist()))

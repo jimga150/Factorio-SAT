@@ -330,6 +330,7 @@ def main():
     parser.add_argument('height', type=int, help='Belt balancer maximum height')
     parser.add_argument('--90', action='store_true', dest='turn_90', help='Make 90 degree balancer')
     parser.add_argument('--180', action='store_true', dest='turn_180', help='Make 180 degree balancer')
+    parser.add_argument('--ungroup-ios', action='store_true', dest='ungroup_ios', help='allow I/Os to spread out along edge')
     parser.add_argument('--custom', action='store_true', help="Don't set up balancer ends (you can set them up manually with --partial)")
     parser.add_argument('--edge-splitters', action='store_true',
                         help='Enforce that any splitter that has both connections to the input/output of the balancer must be placed on the edge')
@@ -365,6 +366,9 @@ def main():
 
     if args.break_symmetry and args.turn_90:
         raise RuntimeError('--break-symmetry and --90 are mutually exclusive')
+
+    if not args.ungroup_ios and args.turn_180:
+        raise RuntimeError('--turn-180 and --ungroup-ios are mutually exclusive')
 
     network = open_network(args.network)
     args.network.close()
@@ -403,13 +407,13 @@ def main():
             set_nonempty_tiles(grid, args.partial.read())
 
     if args.turn_90:
-        setup_balancer_ends_90(grid, network, True, args.use_ends)
+        setup_balancer_ends_90(grid, network, not args.ungroup_ios, args.use_ends)
     elif args.turn_180:
         setup_balancer_ends_180(grid, network)
     elif args.custom:
         pass
     else:
-        setup_balancer_ends(grid, network, args.aligned, True, args.use_ends)
+        setup_balancer_ends(grid, network, args.aligned, not args.ungroup_ios, args.use_ends)
 
     for solution in grid.itersolve(solver=args.solver, ignore_colour=True):
         print(json.dumps(solution.tolist()))
